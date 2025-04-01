@@ -1,0 +1,1530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>structure generator</title>
+    <style>
+        /* CSS remains the same */
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Inter', sans-serif;
+            background-color: #222;
+            color: #eee;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 18px;
+            padding: 20px 30px;
+            background: rgba(40, 40, 40, 0.85);
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .controls {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            background: rgba(50, 50, 50, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 10;
+        }
+        .control-group {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .control-group label {
+            font-weight: bold;
+            margin-right: 5px;
+            font-size: 0.9em;
+            color: #ccc;
+        }
+        button {
+            margin: 0;
+            padding: 10px 18px;
+            background: linear-gradient(145deg, #5a5a5a, #444);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+        }
+        button:hover {
+            background: linear-gradient(145deg, #6a6a6a, #505050);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
+            transform: translateY(-1px);
+        }
+        button:active {
+            background: linear-gradient(145deg, #444, #3a3a3a);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+            transform: translateY(0px);
+        }
+        canvas {
+             display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="loading">Loading 3D scene...</div>
+    <div class="controls" style="display:none">
+        <div class="control-group">
+            <button id="resetBtn">Reset Building</button>
+            <button id="pauseBtn">Pause</button> </div>
+        <div class="control-group">
+             <label>Camera:</label>
+            <button id="orbitBtn">Isometric View</button>
+            <button id="topBtn">Top View</button>
+        </div>
+         </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+
+        window.addEventListener('load', function() {
+            // Use a small delay to ensure fonts/styles might be ready
+            setTimeout(init, 100);
+        });
+
+        // --- Core Components ---
+        let scene, renderer;
+        let perspectiveCamera, orthographicCamera, activeCamera; // Multiple cameras
+
+        // --- Animation & State ---
+        let buildingParts = [];
+        let towerPositions = []; // Store tower data (Made global)
+        let isAnimating = true;
+        let currentPartIndex = 0;
+        let animationSpeed = 0.25; // Speed factor for revealing parts
+        let growthIntervals = []; // Store intervals for smooth growth animation
+        let isOrbitView = false; // Track if isometric orbit is active
+
+        // --- Building Parameters (Emphasis on Verticality) ---
+        const GRID_SIZE = 18; // Size of the grid area for placing towers
+        const CELL_SIZE = 6.5; // Size of one logical cell (influences tower base size)
+        const MAX_HEIGHT = 17; // Maximum number of floors for a tower
+        const FLOOR_HEIGHT = 2.6; // Height of a single floor
+        const BASE_PLATFORM_AREA_SIZE = (GRID_SIZE + 3) * CELL_SIZE; // Area where grass/buildings appear
+        const GROUND_PLANE_SIZE = 350; // Size of the large plane underneath
+
+        // --- Atmosphere ---
+        const fogColor = 0x4a5a6a; // Dark blue-grey fog
+        const fogNear = 30; // Start fog distance
+        const fogFar = 220; // End fog distance
+
+        // --- Rain (Always On) ---
+        let rainParticles, rainGeometry, rainMaterial;
+        const rainCount = 11000; // Number of rain particles
+
+        // --- Grass ---
+        let grassParticles, grassGeometry, grassMaterial;
+        let grassOriginalPositions; // To store base positions for animation
+        const GRASS_COUNT = 80000; // Number of grass particles
+        const GRASS_DOT_COLOR = 0x8FBC8F; // DarkSeaGreen - more muted green
+        const GRASS_DOT_SIZE = 0.3;
+        const GRASS_MAX_HEIGHT = 0.5; // Maximum random height offset for grass blades
+        const WIND_STRENGTH = 0.15; // How much grass moves
+        const WIND_FREQUENCY = 0.05; // How fast wind pattern changes
+
+        // --- Materials (Reused Palette for consistency) ---
+        const concreteMaterials = [
+            new THREE.MeshStandardMaterial({ color: 0x8c8c8c, roughness: 0.85, metalness: 0.1 }), // Medium grey
+            new THREE.MeshStandardMaterial({ color: 0xa0a0a0, roughness: 0.8, metalness: 0.1 }),  // Lighter grey
+            new THREE.MeshStandardMaterial({ color: 0x7a7a7a, roughness: 0.9, metalness: 0.05 }),// Darker grey
+            new THREE.MeshStandardMaterial({ color: 0x99908a, roughness: 0.88, metalness: 0.1 }), // Brownish grey
+            new THREE.MeshStandardMaterial({ color: 0x8f8f80, roughness: 0.9, metalness: 0.08 }), // Greenish grey
+        ];
+        const featureMaterial = new THREE.MeshStandardMaterial({ color: 0x606060, roughness: 0.9, metalness: 0.15 }); // Dark grey for features
+        const windowMaterialDark = new THREE.MeshStandardMaterial({ color: 0x334455, roughness: 0.3, metalness: 0.8, transparent: true, opacity: 0.65, side: THREE.DoubleSide }); // Dark blue window
+        const windowMaterialLight = new THREE.MeshStandardMaterial({ color: 0x778899, roughness: 0.4, metalness: 0.7, transparent: true, opacity: 0.7, side: THREE.DoubleSide }); // Lighter grey window
+        const windowFrameMaterial = new THREE.MeshStandardMaterial({ color: 0x404040, roughness: 0.7, metalness: 0.3 }); // Dark frame
+
+        // --- Colors ---
+        const UNDERGROUND_COLOR = '#333333'; // Dark grey for the plane under the base
+
+        /**
+         * Returns a random concrete material from the palette.
+         * @returns {THREE.MeshStandardMaterial} A random concrete material.
+         */
+        function getRandomConcreteMaterial() {
+            return concreteMaterials[Math.floor(Math.random() * concreteMaterials.length)];
+        }
+
+        /**
+         * Creates and adds a mesh part to the scene and the buildingParts array for animation.
+         * @param {THREE.BufferGeometry} geometry - The geometry of the mesh.
+         * @param {THREE.Material} material - The material of the mesh.
+         * @param {THREE.Vector3} position - The target world position of the mesh.
+         * @param {THREE.Vector3} scale - The target scale of the mesh.
+         * @param {THREE.Euler} [rotation=null] - The target rotation of the mesh.
+         * @param {Object} [additionalData={}] - Extra data to store with the part (can include 'name').
+         * @returns {THREE.Mesh} The created mesh.
+         */
+        function addBuildingMeshPart(geometry, material, position, scale, rotation = null, additionalData = {}) {
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.position.copy(position); // Set initial position (will be animated from origin)
+            mesh.scale.copy(scale);       // Set initial scale (will be animated from small)
+            if (rotation) mesh.rotation.copy(rotation); // Set final rotation directly
+            mesh.castShadow = true;
+            mesh.receiveShadow = true; // Building parts should receive shadows from others
+            mesh.visible = false; // Start invisible
+            mesh.name = additionalData.name || ''; // Assign name if provided
+            scene.add(mesh);
+
+            buildingParts.push({
+                mesh: mesh,
+                position: position.clone(), // Store target position
+                scale: scale.clone(),       // Store target scale
+                rotation: rotation ? rotation.clone() : null, // Store target rotation
+                ...additionalData
+            });
+             return mesh;
+        }
+
+        /**
+         * Generates the entire building structure, including base, towers, and bridges.
+         * Resets and populates the global `towerPositions` array.
+         */
+        function generateBuilding() {
+            console.log("--- generateBuilding START ---");
+            // --- Cleanup previous building ---
+            console.log("Cleaning up old building parts (excluding grass)...");
+
+            buildingParts.forEach(part => {
+                if (part.mesh) { // Check if mesh exists
+                    scene.remove(part.mesh);
+                    if (part.mesh.geometry) part.mesh.geometry.dispose();
+                }
+            });
+            buildingParts = []; // Reset buildingParts completely
+            towerPositions = []; // Reset global tower positions
+            growthIntervals.forEach(clearInterval); // Clear any ongoing growth animations
+            growthIntervals = [];
+            currentPartIndex = 0; // Reset animation index
+
+            // --- Generate Towers ---
+            const numTowers = 4 + Math.floor(Math.random() * 4); // 4-7 main tower masses
+            console.log(`Generating ${numTowers} towers...`);
+
+            for (let i = 0; i < numTowers; i++) {
+                let x, z, width, depth, height;
+                let attempts = 0;
+                let positionValid = false;
+                const maxAttempts = 30;
+
+                // Try to find a non-overlapping position for the tower
+                while (!positionValid && attempts < maxAttempts) {
+                    // Random grid position (relative to base platform center 0,0)
+                    const maxPos = (BASE_PLATFORM_AREA_SIZE / 2) - CELL_SIZE * 1.5; // Keep towers away from edge
+                    x = (Math.random() * 2 - 1) * maxPos;
+                    z = (Math.random() * 2 - 1) * maxPos;
+
+                    // Taller height average
+                    height = 7 + Math.floor(Math.random() * (MAX_HEIGHT - 6)); // Min height 7 floors
+
+                    // Slightly narrower base dimensions favored
+                    let gridWidthCells = (Math.random() < 0.6 ? 1.2 : (Math.random() < 0.85 ? 1.8 : 2.2));
+                    let gridDepthCells = (Math.random() < 0.6 ? 1.2 : (Math.random() < 0.85 ? 1.8 : 2.2));
+                    width = gridWidthCells * CELL_SIZE;
+                    depth = gridDepthCells * CELL_SIZE;
+
+                    // Overlap check using simple radius approximation
+                    positionValid = true;
+                    // Center calculation now relative to world origin (which is base center)
+                    const currentCenter = { x: x + width/2, z: z + depth/2 }; // Center of this tower attempt
+                    const currentRadius = Math.sqrt(width*width + depth*depth) / 2;
+
+                    // Check bounds (ensure entire tower fits on base)
+                    if (Math.abs(x) + width > BASE_PLATFORM_AREA_SIZE / 2 ||
+                        Math.abs(z) + depth > BASE_PLATFORM_AREA_SIZE / 2) {
+                        positionValid = false;
+                        attempts++;
+                        continue; // Skip overlap check if out of bounds
+                    }
+
+
+                    for (const pos of towerPositions) {
+                        const dx = currentCenter.x - pos.center.x;
+                        const dz = currentCenter.z - pos.center.z;
+                        const distance = Math.sqrt(dx*dx + dz*dz);
+                        // Check if radii overlap with a small buffer
+                        if (distance < currentRadius + pos.radius + CELL_SIZE * 0.8) {
+                            positionValid = false;
+                            break;
+                        }
+                    }
+                    attempts++;
+                }
+
+                if (!positionValid) {
+                    console.log(`Skipping tower ${i+1}, could not find valid position.`);
+                    continue; // Skip if couldn't find a valid position
+                }
+
+                // Store tower data (using world coordinates x, z for the corner)
+                const towerData = {
+                    x: x, z: z, // World position of corner
+                    initialWidth: width, initialDepth: depth,
+                    height: height,
+                };
+                // Add to global towerPositions array
+                towerPositions.push({
+                    center: {x: towerData.x + width/2, z: towerData.z + depth/2}, // Center for overlap check
+                    radius: Math.sqrt(width*width + depth*depth)/2, // Radius for overlap check
+                    height: height, // Store height for bridge logic
+                    x: towerData.x, z: towerData.z, // Store corner
+                    width: width, depth: depth
+                });
+
+                addTower(towerData); // Generate the tower floors and features
+
+                 // --- Add Bridges (More Frequent) ---
+                 if (towerPositions.length > 1 && Math.random() < 0.55) { // Increased probability
+                    // Select a random previous tower to connect to
+                    const prevTowerIndex = Math.floor(Math.random() * (towerPositions.length - 1));
+                    const prevTowerPosData = towerPositions[prevTowerIndex];
+                    const currentTowerPosData = towerPositions[towerPositions.length - 1]; // The one just added
+
+                    // Check height compatibility for bridge placement
+                    const maxHeightForBridge = Math.min(currentTowerPosData.height, prevTowerPosData.height);
+                    if (maxHeightForBridge > 4) { // Ensure towers are reasonably tall
+                        // Place bridge somewhere between floor 2 and (maxHeight - 2)
+                        const bridgeYLevel = 2 + Math.floor(Math.random() * (maxHeightForBridge - 4));
+                        const bridgeY = FLOOR_HEIGHT / 2 + bridgeYLevel * FLOOR_HEIGHT;
+
+                        // Use center positions for bridge calculation for simplicity
+                        const x1 = prevTowerPosData.center.x;
+                        const z1 = prevTowerPosData.center.z;
+                        const x2 = currentTowerPosData.center.x;
+                        const z2 = currentTowerPosData.center.z;
+
+                        addBridge(x1, z1, x2, z2, bridgeY);
+                    }
+                }
+            }
+
+            // Sort parts by Y position for bottom-up animation
+             buildingParts.sort((a, b) => a.position.y - b.position.y);
+            console.log(`Generated ${buildingParts.length} building parts.`);
+            console.log(`Generated ${towerPositions.length} towers.`);
+            console.log("--- generateBuilding END ---");
+        }
+
+        // --- addBase function removed ---
+
+        /**
+         * Adds a single tower structure floor by floor, with variations and features.
+         * @param {object} towerData - Contains initial position, dimensions, and height.
+         */
+        function addTower(towerData) {
+             let currentWidth = towerData.initialWidth;
+             let currentDepth = towerData.initialDepth;
+             let currentRotationY = 0; // Base rotation for the whole tower
+
+             // Chance for the entire tower to have a slight base rotation
+             if (Math.random() < 0.15) {
+                 currentRotationY = (Math.random() - 0.5) * Math.PI / 9; // Max ~20 degrees
+             }
+             const baseRotation = new THREE.Euler(0, currentRotationY, 0);
+
+             // Add floors one by one
+             for (let floor = 0; floor < towerData.height; floor++) {
+                 const y = FLOOR_HEIGHT / 2 + floor * FLOOR_HEIGHT; // Center Y of the floor
+                 let floorRotation = baseRotation.clone(); // Start with base rotation
+
+                 // --- Floor Shape/Size/Rotation Variation (applied after first floor) ---
+                 if (floor > 1 && Math.random() < 0.45) {
+                     const widthFactor = 0.7 + Math.random() * 0.6;
+                     const depthFactor = 0.7 + Math.random() * 0.6;
+                     currentWidth = Math.max(CELL_SIZE * 0.6, currentWidth * widthFactor);
+                     currentDepth = Math.max(CELL_SIZE * 0.6, currentDepth * depthFactor);
+                 }
+                 if (floor > 1 && Math.random() < 0.12) {
+                     floorRotation.y += (Math.random() - 0.5) * Math.PI / 14;
+                 }
+
+                 // --- Floor Geometry & Material ---
+                 const geometry = new THREE.BoxGeometry(1, 1, 1); // Unit cube
+                 const scale = new THREE.Vector3(currentWidth, FLOOR_HEIGHT, currentDepth);
+                 const material = getRandomConcreteMaterial();
+                 const position = new THREE.Vector3(towerData.x + currentWidth/2, y, towerData.z + currentDepth/2);
+
+                 addBuildingMeshPart(geometry, material, position, scale, floorRotation);
+
+                 // --- Add Windows (Higher chance on lower floors) ---
+                 const windowChance = (floor < 2) ? 0.75 : 0.5;
+                 if (Math.random() < windowChance) {
+                      const sides = ['front', 'back', 'left', 'right'];
+                      const numWindowSides = 1 + Math.floor(Math.random() * 1.2);
+                      const windowSides = sides.sort(() => 0.5 - Math.random()).slice(0, numWindowSides);
+                      for (const side of windowSides) {
+                          addWindows(position.x, y, position.z, currentWidth, currentDepth, floor, side, floorRotation);
+                      }
+                 }
+
+                 // --- Add Balconies ---
+                 if (floor > 0 && floor < towerData.height - 1 && Math.random() < 0.12) {
+                     addBalcony(position.x, y, position.z, currentWidth, currentDepth, floorRotation);
+                 }
+
+                 // --- Add Adjacent Blocks ---
+                  if (floor > 1 && floor < towerData.height - 2 && Math.random() < 0.18) {
+                     addAdjacentBlock(position.x, y, position.z, currentWidth, currentDepth, floorRotation);
+                  }
+             }
+
+             // --- Features added after all floors are defined (using final dimensions/rotation) ---
+             const finalWidth = currentWidth;
+             const finalDepth = currentDepth;
+             const finalRotation = baseRotation;
+             const finalCenterPosition = new THREE.Vector3(towerData.x + finalWidth/2, 0, towerData.z + finalDepth/2);
+
+             // --- Add Roof Feature ---
+             if (Math.random() < 0.75) {
+                 const topFloorY = FLOOR_HEIGHT / 2 + (towerData.height - 1) * FLOOR_HEIGHT;
+                 const roofSurfaceY = topFloorY + FLOOR_HEIGHT / 2;
+                 addRoofFeature(finalCenterPosition.x, roofSurfaceY, finalCenterPosition.z, finalWidth, finalDepth, finalRotation);
+             }
+
+             // --- Add Brutalist Feature (e.g., cantilever, pilotis) ---
+             if (towerData.height > 3 && Math.random() < 0.75) {
+                 const featureFloorIndex = 1 + Math.floor(Math.random() * Math.max(1, towerData.height - 3));
+                 const featureFloorY = FLOOR_HEIGHT / 2 + featureFloorIndex * FLOOR_HEIGHT;
+                 addBrutalistFeature(finalCenterPosition.x, featureFloorY, finalCenterPosition.z, finalWidth, finalDepth, finalRotation, towerData);
+             }
+        }
+
+
+        /**
+         * Adds windows to a specific face of a floor block.
+         * @param {number} centerX - Center X of the floor block.
+         * @param {number} centerY - Center Y of the floor block.
+         * @param {number} centerZ - Center Z of the floor block.
+         * @param {number} width - Width (X-axis) of the floor block.
+         * @param {number} depth - Depth (Z-axis) of the floor block.
+         * @param {number} floor - Floor index.
+         * @param {string} side - Which side to add windows ('front', 'back', 'left', 'right').
+         * @param {THREE.Euler} floorRotation - The rotation applied to the floor block.
+         */
+        function addWindows(centerX, centerY, centerZ, width, depth, floor, side, floorRotation) {
+            const windowStyleRand = Math.random();
+            let windowStyle;
+
+            // --- Adjust style probabilities for lower floors ---
+            if (floor < 2 && Math.random() < 0.5) { // 50% chance for strip on lower floors
+                windowStyle = 'strip';
+            } else if (windowStyleRand < 0.5) {
+                 windowStyle = 'strip';
+            } else if (windowStyleRand < 0.85) {
+                windowStyle = 'pattern';
+            } else {
+                windowStyle = 'vertical_slits';
+            }
+
+
+            const windowMaterial = Math.random() < 0.5 ? windowMaterialDark : windowMaterialLight;
+            const recess = 0.25 + Math.random() * 0.2; // How far window is set back: 0.25 to 0.45
+            const frameThickness = 0.08;
+            const addFrame = Math.random() < 0.4; // 40% chance of adding a frame
+            const windowDepth = 0.1; // Thickness of the window pane geometry
+
+            let winHeight, numWin = 1, spacing = 0, actualWindowWidth;
+            let sideAxisLength = 0; // The length of the side we are adding windows to
+            let localNormal = new THREE.Vector3(); // Normal vector of the face *before* floor rotation
+            let localTangent = new THREE.Vector3(); // Tangent vector along the face *before* floor rotation
+            let faceCenterOffset = new THREE.Vector3(); // Offset from floor center to face center *before* rotation
+
+            // --- Define face properties based on side ---
+            switch(side) {
+                case 'front': // Positive Z face
+                    sideAxisLength = width;
+                    localNormal.set(0, 0, 1);
+                    localTangent.set(1, 0, 0);
+                    faceCenterOffset.set(0, 0, depth / 2);
+                    break;
+                case 'back': // Negative Z face
+                    sideAxisLength = width;
+                    localNormal.set(0, 0, -1);
+                    localTangent.set(-1, 0, 0); // Tangent points left along back face
+                    faceCenterOffset.set(0, 0, -depth / 2);
+                    break;
+                case 'left': // Negative X face
+                    sideAxisLength = depth;
+                    localNormal.set(-1, 0, 0);
+                    localTangent.set(0, 0, 1); // Tangent points forward along left face
+                    faceCenterOffset.set(-width / 2, 0, 0);
+                    break;
+                case 'right': // Positive X face
+                    sideAxisLength = depth;
+                    localNormal.set(1, 0, 0);
+                    localTangent.set(0, 0, -1); // Tangent points backward along right face
+                    faceCenterOffset.set(width / 2, 0, 0);
+                    break;
+            }
+
+            // --- Define window dimensions based on style ---
+            switch(windowStyle) {
+                case 'strip':
+                    winHeight = FLOOR_HEIGHT * (0.4 + Math.random() * 0.4); // Slightly taller strips on average (40-80%)
+                    actualWindowWidth = sideAxisLength * 0.9; // 90% of the side length
+                    numWin = 1;
+                    break;
+                case 'pattern':
+                    numWin = Math.floor(Math.random() * 3) + 2; // 2-4 windows
+                    winHeight = FLOOR_HEIGHT * (0.5 + Math.random() * 0.3); // Taller pattern windows (50-80%)
+                    spacing = sideAxisLength / numWin;
+                    actualWindowWidth = spacing * 0.65; // Smaller windows, larger gaps
+                    break;
+                case 'vertical_slits':
+                    numWin = Math.floor(Math.random() * 4) + 3; // 3-6 slits
+                    winHeight = FLOOR_HEIGHT * (0.7 + Math.random() * 0.2); // Taller slits (70-90%)
+                    spacing = sideAxisLength / numWin;
+                    actualWindowWidth = spacing * 0.15; // Very narrow
+                    break;
+            }
+
+            // --- Adjust size for lower floors (Retail feel) ---
+            if (floor < 2) {
+                winHeight *= 1.1; // Make windows slightly taller near ground
+                if (windowStyle === 'strip') {
+                     actualWindowWidth = sideAxisLength * 0.95; // Make strips wider near ground
+                }
+            }
+            // Ensure height doesn't exceed floor height
+             winHeight = Math.min(winHeight, FLOOR_HEIGHT * 0.95);
+
+
+            // --- Create and place windows ---
+            const geom = new THREE.BoxGeometry(actualWindowWidth, winHeight, windowDepth); // Geometry defined with correct dimensions
+            const scale = new THREE.Vector3(1, 1, 1); // Scale is 1 because geometry has dimensions
+
+            for (let i = 0; i < numWin; i++) {
+                // Calculate offset along the tangent for patterned/slit windows
+                let tangentOffset = 0;
+                if (numWin > 1) {
+                    tangentOffset = (i - (numWin - 1) / 2) * spacing;
+                }
+
+                // 1. Calculate local position relative to floor center
+                // Start at face center, move out by recess, move along tangent
+                let localPosition = faceCenterOffset.clone(); // Start at center of the face
+                localPosition.addScaledVector(localNormal, recess); // Move outwards (or inwards if recess is negative)
+                localPosition.addScaledVector(localTangent, tangentOffset); // Move along the tangent
+
+                // 2. Apply floor rotation to the local offset vector
+                let rotatedOffset = localPosition.clone().applyEuler(floorRotation);
+
+                // 3. Calculate final world position
+                let winPosition = new THREE.Vector3(centerX, centerY, centerZ).add(rotatedOffset);
+
+                // 4. Calculate final window rotation
+                // Start with floor rotation, then add rotation to align window face with the normal
+                let winRotation = floorRotation.clone();
+                // Create a quaternion representing the rotation from +Z axis (where window geometry faces) to the localNormal
+                let alignQuaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), localNormal);
+                // Apply this alignment rotation *after* the floor rotation
+                winRotation.setFromQuaternion(new THREE.Quaternion().setFromEuler(winRotation).multiply(alignQuaternion));
+
+
+                addBuildingMeshPart(geom, windowMaterial, winPosition, scale, winRotation);
+
+                // --- Add Frame (Optional) ---
+                if (addFrame && windowStyle !== 'strip') { // No frame for strips usually
+                    const frameGeom = new THREE.BoxGeometry(
+                        actualWindowWidth + frameThickness * 2,
+                        winHeight + frameThickness * 2,
+                        frameThickness // Depth of the frame itself
+                    );
+                    // Position frame slightly behind the window pane along the *rotated* normal
+                    let framePosition = winPosition.clone().addScaledVector(localNormal.clone().applyEuler(floorRotation), -windowDepth/2 - frameThickness/2); // Position center of frame
+                    let frameRotation = winRotation.clone(); // Frame has same rotation as window
+                    addBuildingMeshPart(frameGeom, windowFrameMaterial, framePosition, scale, frameRotation); // Scale is 1
+                }
+            }
+        }
+
+
+        /**
+         * Adds a balcony to a specific side of a floor block.
+         * @param {number} centerX - Center X of the floor block.
+         * @param {number} centerY - Center Y of the floor block.
+         * @param {number} centerZ - Center Z of the floor block.
+         * @param {number} width - Width (X-axis) of the floor block.
+         * @param {number} depth - Depth (Z-axis) of the floor block.
+         * @param {THREE.Euler} floorRotation - The rotation applied to the floor block.
+         */
+        function addBalcony(centerX, centerY, centerZ, width, depth, floorRotation) {
+            const balconyDepth = CELL_SIZE * (0.4 + Math.random() * 0.4); // How far it extends out
+            const balconyWidthRatio = 0.5 + Math.random() * 0.4; // % of the side width it covers
+            const balconyHeight = FLOOR_HEIGHT * 0.1; // Thickness of the balcony floor
+            const railingHeight = FLOOR_HEIGHT * 0.35;
+            const railingThickness = 0.08;
+
+            const sides = ['front', 'back', 'left', 'right'];
+            const side = sides[Math.floor(Math.random() * sides.length)]; // Random side
+
+            const material = getRandomConcreteMaterial();
+            let currentBalconyWidth, currentBalconyDepthForPosCalc;
+            let localNormal = new THREE.Vector3();
+            let localTangent = new THREE.Vector3(); // Needed for railing placement maybe
+            let faceCenterOffset = new THREE.Vector3();
+            let sideAxisLength;
+
+            // --- Define properties based on side ---
+            switch (side) {
+                case 'front':
+                    localNormal.set(0, 0, 1); localTangent.set(1, 0, 0); faceCenterOffset.set(0, 0, depth / 2);
+                    sideAxisLength = width; currentBalconyWidth = width * balconyWidthRatio; currentBalconyDepthForPosCalc = balconyDepth;
+                    break;
+                case 'back':
+                    localNormal.set(0, 0, -1); localTangent.set(-1, 0, 0); faceCenterOffset.set(0, 0, -depth / 2);
+                    sideAxisLength = width; currentBalconyWidth = width * balconyWidthRatio; currentBalconyDepthForPosCalc = balconyDepth;
+                    break;
+                case 'left':
+                    localNormal.set(-1, 0, 0); localTangent.set(0, 0, 1); faceCenterOffset.set(-width / 2, 0, 0);
+                    sideAxisLength = depth; currentBalconyWidth = depth * balconyWidthRatio; currentBalconyDepthForPosCalc = balconyDepth; // Width along Z here
+                    break;
+                case 'right':
+                    localNormal.set(1, 0, 0); localTangent.set(0, 0, -1); faceCenterOffset.set(width / 2, 0, 0);
+                    sideAxisLength = depth; currentBalconyWidth = depth * balconyWidthRatio; currentBalconyDepthForPosCalc = balconyDepth; // Width along Z here
+                    break;
+            }
+
+            // --- Balcony Floor ---
+            const floorGeom = new THREE.BoxGeometry(currentBalconyWidth, balconyHeight, balconyDepth); // Use actual dimensions
+            const floorSurfaceY = centerY - FLOOR_HEIGHT / 2; // Y-level of the floor this balcony is attached to
+            const balconyFloorCenterY = floorSurfaceY + balconyHeight / 2; // Center Y of the balcony slab
+
+            // Calculate position: Start at floor center, move to face center, move out by half balcony depth
+            let localPosition = faceCenterOffset.clone().addScaledVector(localNormal, balconyDepth / 2);
+            localPosition.y = balconyFloorCenterY - centerY; // Adjust Y relative to floor center
+
+            let rotatedOffset = localPosition.clone().applyEuler(floorRotation);
+            let finalPosition = new THREE.Vector3(centerX, centerY, centerZ).add(rotatedOffset);
+
+            // Calculate rotation: Align balcony's Z axis (depth) with the localNormal
+            let finalRotation = floorRotation.clone();
+            let alignQuaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), localNormal);
+            finalRotation.setFromQuaternion(new THREE.Quaternion().setFromEuler(finalRotation).multiply(alignQuaternion));
+
+            addBuildingMeshPart(floorGeom, material, finalPosition, new THREE.Vector3(1,1,1), finalRotation);
+
+            // --- Railing (Simplified - just the front railing) ---
+            const railingGeom = new THREE.BoxGeometry(currentBalconyWidth, railingHeight, railingThickness);
+            // Position railing on top of the balcony floor, at the outer edge
+            // Calculate railing center position relative to balcony center
+            let railingLocalOffset = new THREE.Vector3(0, balconyHeight / 2 + railingHeight / 2, balconyDepth / 2 - railingThickness / 2);
+
+            // Rotate this offset according to the balcony's final rotation
+            let rotatedRailingOffset = railingLocalOffset.clone().applyEuler(finalRotation);
+            let railingPosition = finalPosition.clone().add(rotatedRailingOffset);
+
+            addBuildingMeshPart(railingGeom, material, railingPosition, new THREE.Vector3(1,1,1), finalRotation); // Same rotation as balcony floor
+        }
+
+        /**
+         * Adds a smaller block attached to the side of a main floor block.
+         * @param {number} centerX - Center X of the main floor block.
+         * @param {number} centerY - Center Y of the main floor block.
+         * @param {number} centerZ - Center Z of the main floor block.
+         * @param {number} mainWidth - Width (X-axis) of the main floor block.
+         * @param {number} mainDepth - Depth (Z-axis) of the main floor block.
+         * @param {THREE.Euler} mainRotation - The rotation applied to the main floor block.
+         */
+        function addAdjacentBlock(centerX, centerY, centerZ, mainWidth, mainDepth, mainRotation) {
+            const sizeRatio = 0.3 + Math.random() * 0.4; // Size relative to main block
+            const adjHeight = FLOOR_HEIGHT * (1 + Math.floor(Math.random() * 3)); // 1-3 floors high
+            const adjWidth = mainWidth * sizeRatio;
+            const adjDepth = mainDepth * sizeRatio;
+
+            const geometry = new THREE.BoxGeometry(adjWidth, adjHeight, adjDepth); // Use actual dimensions
+            const material = getRandomConcreteMaterial();
+            const scale = new THREE.Vector3(1, 1, 1);
+
+            // --- Determine attachment point ---
+            const sides = [
+                { normal: new THREE.Vector3(1,0,0), mainDim: mainWidth, adjDim: adjWidth },   // Right
+                { normal: new THREE.Vector3(-1,0,0), mainDim: mainWidth, adjDim: adjWidth },  // Left
+                { normal: new THREE.Vector3(0,0,1), mainDim: mainDepth, adjDim: adjDepth },   // Front
+                { normal: new THREE.Vector3(0,0,-1), mainDim: mainDepth, adjDim: adjDepth }   // Back
+            ];
+            const attachSide = sides[Math.floor(Math.random() * sides.length)];
+            let localAttachNormal = attachSide.normal;
+
+            // Calculate local offset: Move from main center to its edge, then out by half the adjacent block's dimension (slight overlap)
+            let localOffset = localAttachNormal.clone().multiplyScalar(attachSide.mainDim / 2 + attachSide.adjDim / 2 * 0.9);
+            // Adjust Y position: Center of adjacent block relative to main block's center Y
+            localOffset.y = (centerY + adjHeight / 2 - FLOOR_HEIGHT / 2) - centerY; // Center Y of adj block - Center Y of main block
+
+            // Apply main rotation to the offset
+            let rotatedOffset = localOffset.clone().applyEuler(mainRotation);
+            let finalPosition = new THREE.Vector3(centerX, centerY, centerZ).add(rotatedOffset);
+
+            // Adjacent block generally shares the main rotation, maybe slight variation
+            const adjRotation = mainRotation.clone();
+            adjRotation.y += (Math.random() - 0.5) * Math.PI / 12; // Slight twist
+
+            addBuildingMeshPart(geometry, material, finalPosition, scale, adjRotation);
+        }
+
+
+        /**
+         * Adds a feature (mechanical box, antenna, etc.) to the roof surface.
+         * @param {number} centerX - Center X of the tower's top floor.
+         * @param {number} roofSurfaceY - The Y-coordinate of the flat roof surface.
+         * @param {number} centerZ - Center Z of the tower's top floor.
+         * @param {number} width - Final width (X-axis) of the top floor.
+         * @param {number} depth - Final depth (Z-axis) of the top floor.
+         * @param {THREE.Euler} rotation - Final rotation of the top floor.
+         */
+        function addRoofFeature(centerX, roofSurfaceY, centerZ, width, depth, rotation) {
+            const featureRand = Math.random();
+            let featureType;
+
+            // Determine feature type based on probability
+            if (featureRand < 0.3) featureType = 'mechanical_box';
+            else if (featureRand < 0.55) featureType = 'antenna_array'; // Higher chance
+            else if (featureRand < 0.75) featureType = 'slanted_roof';
+            else featureType = 'helipad';
+
+            const featureHeight = FLOOR_HEIGHT * (0.6 + Math.random() * 1.2); // Variable height
+            const baseSize = Math.min(width, depth) * (0.4 + Math.random() * 0.3); // Size based on roof dimensions
+
+            let geometry, material, scale, position;
+            const featureCenterY = roofSurfaceY + featureHeight / 2; // Center Y of the feature itself
+            const featureRotation = rotation.clone(); // Feature generally aligns with tower rotation
+
+            material = featureMaterial; // Use the dedicated feature material
+
+            // Calculate position offset relative to tower center (before rotation)
+            let localOffsetX = (Math.random() - 0.5) * width * 0.3; // Random offset on roof
+            let localOffsetZ = (Math.random() - 0.5) * depth * 0.3;
+            let localOffsetY = featureCenterY - roofSurfaceY; // Y offset relative to roof surface Y
+
+            switch(featureType) {
+                case 'mechanical_box':
+                    const boxWidth = baseSize;
+                    const boxDepth = baseSize * (0.7 + Math.random() * 0.6);
+                    geometry = new THREE.BoxGeometry(boxWidth, featureHeight, boxDepth);
+                    scale = new THREE.Vector3(1, 1, 1);
+                    // Apply rotation to the offset
+                    let rotatedOffsetBox = new THREE.Vector3(localOffsetX, localOffsetY, localOffsetZ).applyEuler(rotation);
+                    position = new THREE.Vector3(centerX, roofSurfaceY, centerZ).add(rotatedOffsetBox);
+                    addBuildingMeshPart(geometry, material, position, scale, featureRotation);
+                    break;
+
+                case 'antenna_array':
+                    const numAntennas = 2 + Math.floor(Math.random() * 4);
+                    const antennaHeight = featureHeight * 1.5; // Taller antennas
+                    const poleRadius = baseSize * 0.05;
+                    const poleCenterY = roofSurfaceY + antennaHeight / 2; // Center Y for each pole
+                    const poleMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.4, metalness: 0.6 });
+                    geometry = new THREE.CylinderGeometry(poleRadius, poleRadius * 0.5, antennaHeight, 6); // Simple cylinder
+                    scale = new THREE.Vector3(1, 1, 1);
+
+                    for (let i = 0; i < numAntennas; i++) {
+                        // Random offset for each antenna, relative to tower center
+                        const antOffsetX = (Math.random() - 0.5) * baseSize * 1.2;
+                        const antOffsetZ = (Math.random() - 0.5) * baseSize * 1.2;
+                        const antOffsetY = poleCenterY - roofSurfaceY; // Y offset relative to roof surface
+                        // Rotate the offset vector
+                        let rotatedOffsetAnt = new THREE.Vector3(antOffsetX, antOffsetY, antOffsetZ).applyEuler(rotation);
+                        // Final position
+                        const antPos = new THREE.Vector3(centerX, roofSurfaceY, centerZ).add(rotatedOffsetAnt);
+                        addBuildingMeshPart(geometry.clone(), poleMat, antPos, scale, featureRotation); // Clone geometry
+                    }
+                    break;
+
+                case 'slanted_roof':
+                     // Simple slanted plane using a thin box rotated
+                    const slantWidth = width * 0.9;
+                    const slantDepth = depth * 0.9;
+                    const slantThickness = FLOOR_HEIGHT * 0.15;
+                    geometry = new THREE.BoxGeometry(slantWidth, slantThickness, slantDepth);
+                    scale = new THREE.Vector3(1, 1, 1);
+                    position = new THREE.Vector3(centerX, roofSurfaceY + slantThickness * 0.4, centerZ); // Slightly above surface
+                    // Add slant rotation to the existing tower rotation
+                    featureRotation.x += (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 8 + Math.random() * Math.PI / 8); // Slant along X or Z axis relative to tower
+                    addBuildingMeshPart(geometry, material, position, scale, featureRotation);
+                    break;
+
+                 case 'helipad':
+                    const helipadRadius = baseSize * 0.7;
+                    const helipadHeight = FLOOR_HEIGHT * 0.1;
+                    geometry = new THREE.CylinderGeometry(helipadRadius, helipadRadius, helipadHeight, 32); // Circular pad
+                    scale = new THREE.Vector3(1, 1, 1);
+                    position = new THREE.Vector3(centerX, roofSurfaceY + helipadHeight / 2, centerZ); // Centered on roof
+                    const helipadMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.8 });
+                    addBuildingMeshPart(geometry, helipadMat, position, scale, featureRotation); // Use tower rotation
+
+                    // Add 'H' marking (simplified)
+                    const hMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.9 });
+                    const hBarWidth = helipadRadius * 0.1; // Width of H bars
+                    const hBarLength = helipadRadius * 0.5; // Length of vertical H bars
+                    const hCrossLength = helipadRadius * 0.4; // Length of cross bar
+                    const hThickness = helipadHeight * 1.1; // Slightly above pad surface
+
+                    const hGeomVert = new THREE.BoxGeometry(hBarWidth, hThickness, hBarLength);
+                    const hGeomCross = new THREE.BoxGeometry(hCrossLength, hThickness, hBarWidth);
+
+                    // Position relative to helipad center, then apply rotation
+                    const hY = helipadHeight / 2 + hThickness / 2; // Y offset relative to helipad center
+                    const hXOffset = hCrossLength / 2 - hBarWidth / 2; // X offset for vertical bars
+
+                    // Vertical Bar 1
+                    let hPos1Local = new THREE.Vector3(-hXOffset, hY, 0);
+                    let hPos1World = position.clone().add(hPos1Local.applyEuler(featureRotation));
+                    addBuildingMeshPart(hGeomVert.clone(), hMat, hPos1World, scale, featureRotation);
+
+                    // Vertical Bar 2
+                    let hPos2Local = new THREE.Vector3(hXOffset, hY, 0);
+                    let hPos2World = position.clone().add(hPos2Local.applyEuler(featureRotation));
+                    addBuildingMeshPart(hGeomVert.clone(), hMat, hPos2World, scale, featureRotation);
+
+                    // Cross Bar
+                    let hPosCrossLocal = new THREE.Vector3(0, hY, 0);
+                    let hPosCrossWorld = position.clone().add(hPosCrossLocal.applyEuler(featureRotation));
+                    addBuildingMeshPart(hGeomCross.clone(), hMat, hPosCrossWorld, scale, featureRotation);
+                    break;
+            }
+        }
+
+        /**
+         * Adds a prominent Brutalist feature (cantilever, pilotis, fins, stair core) to a floor.
+         * @param {number} centerX - Center X of the tower.
+         * @param {number} featureFloorY - The center Y coordinate of the floor where the feature originates.
+         * @param {number} centerZ - Center Z of the tower.
+         * @param {number} width - Final width (X-axis) of the tower.
+         * @param {number} depth - Final depth (Z-axis) of the tower.
+         * @param {THREE.Euler} rotation - Final rotation of the tower.
+         * @param {object} towerData - Full data object for the tower.
+         */
+        function addBrutalistFeature(centerX, featureFloorY, centerZ, width, depth, rotation, towerData) {
+            const featureRand = Math.random();
+            let featureType;
+            // Adjusted probabilities for more cantilevers/pilotis
+            if (featureRand < 0.55) featureType = 'cantilever'; // Increased chance
+            else if (featureRand < 0.80) featureType = 'pilotis';  // Increased chance
+            else if (featureRand < 0.90) featureType = 'fins';
+            else featureType = 'stair_core';
+
+            const material = featureMaterial; // Use the darker feature material
+
+            // Calculate approximate tower center Y - DECLARE ONCE before switch
+            const towerCenterY = (towerData.height * FLOOR_HEIGHT) / 2;
+
+            switch(featureType) {
+                 case 'cantilever': { // Use block scope for case if declaring variables inside
+                    const cantHeight = FLOOR_HEIGHT * (0.9 + Math.random() * 0.6); // 0.9 to 1.5 floors high
+                    const cantLength = CELL_SIZE * (1.0 + Math.random() * 1.5); // How far it extends
+                    const cantWidth = Math.min(width, depth) * (0.5 + Math.random() * 0.4); // Width of the cantilevered section
+                    const directions = [
+                        { normal: new THREE.Vector3(1, 0, 0), mainDim: width, axis: 'x' },
+                        { normal: new THREE.Vector3(-1, 0, 0), mainDim: width, axis: 'x' },
+                        { normal: new THREE.Vector3(0, 0, 1), mainDim: depth, axis: 'z' },
+                        { normal: new THREE.Vector3(0, 0, -1), mainDim: depth, axis: 'z' }
+                    ];
+                    const dirInfo = directions[Math.floor(Math.random() * directions.length)];
+                    const localNormal = dirInfo.normal;
+
+                    let cantActualWidth, cantActualDepth;
+                    if (dirInfo.axis === 'x') { // Cantilever extends along X
+                        cantActualWidth = cantLength;
+                        cantActualDepth = cantWidth;
+                    } else { // Cantilever extends along Z
+                        cantActualWidth = cantWidth;
+                        cantActualDepth = cantLength;
+                    }
+
+                    const geometry = new THREE.BoxGeometry(cantActualWidth, cantHeight, cantActualDepth);
+                    const scale = new THREE.Vector3(1, 1, 1);
+
+                    // Position: From tower center, move to edge, move out by half cantilever length
+                    let localOffset = localNormal.clone().multiplyScalar(dirInfo.mainDim / 2 + cantLength / 2);
+                    // Use towerCenterY declared outside switch
+                    localOffset.y = (featureFloorY - FLOOR_HEIGHT/2 + cantHeight/2) - towerCenterY; // Y relative to tower center
+
+                    let rotatedOffset = localOffset.clone().applyEuler(rotation);
+                    let position = new THREE.Vector3(centerX, towerCenterY, centerZ).add(rotatedOffset); // Add offset to tower center
+
+                    // Rotation: Align cantilever's extension axis (local X or Z) with the localNormal
+                    let cantRotation = rotation.clone();
+                    let alignAxis = (dirInfo.axis === 'x') ? new THREE.Vector3(1,0,0) : new THREE.Vector3(0,0,1);
+                    let alignQuat = new THREE.Quaternion().setFromUnitVectors(alignAxis, localNormal);
+                    cantRotation.setFromQuaternion(new THREE.Quaternion().setFromEuler(cantRotation).multiply(alignQuat));
+
+
+                    addBuildingMeshPart(geometry, material, position, scale, cantRotation);
+                    break;
+                 } // End case 'cantilever' block scope
+
+                case 'pilotis': { // Use block scope
+                    const pilotisSize = Math.min(width, depth) * (0.4 + Math.random() * 0.4); // Slightly thicker pilotis
+                    const featureFloorBottomY = featureFloorY - FLOOR_HEIGHT / 2; // Bottom Y of the floor slab
+                    const pilotisHeight = featureFloorBottomY; // Height from ground to bottom of slab
+                     if (pilotisHeight <= FLOOR_HEIGHT * 0.5) break; // Don't add if feature floor is too low
+                    const pilotisCenterY = pilotisHeight / 2; // Center Y of the column itself
+
+                    // Place pilotis near a corner
+                    const cornerOffsetX = width / 2 * (Math.random() < 0.5 ? 1 : -1) * 0.8; // 80% towards corner X
+                    const cornerOffsetZ = depth / 2 * (Math.random() < 0.5 ? 1 : -1) * 0.8; // 80% towards corner Z
+
+                    const pilotisGeom = Math.random() < 0.5
+                        ? new THREE.BoxGeometry(pilotisSize, pilotisHeight, pilotisSize)
+                        : new THREE.CylinderGeometry(pilotisSize/2, pilotisSize/2, pilotisHeight, 10); // Round or square
+                    const pilotisScale = new THREE.Vector3(1, 1, 1);
+
+                    // Calculate position relative to tower center at ground level
+                    let localPilotisPos = new THREE.Vector3(cornerOffsetX, pilotisCenterY, cornerOffsetZ);
+                    let rotatedPilotisOffset = localPilotisPos.clone().applyEuler(rotation);
+                    // Add to tower's base center position (assuming centerX, centerZ are at base)
+                    let pilotisPos = new THREE.Vector3(centerX, 0, centerZ).add(rotatedPilotisOffset);
+
+                    addBuildingMeshPart(pilotisGeom, material, pilotisPos, pilotisScale, rotation); // Pilotis aligns with tower rotation
+                    break;
+                } // End case 'pilotis' block scope
+
+                case 'fins': { // Use block scope
+                    const finThickness = 0.2;
+                    const finDepth = CELL_SIZE * (0.4 + Math.random() * 0.5); // How far they stick out
+                    const finHeight = FLOOR_HEIGHT * (2.5 + Math.random() * 3.5); // Taller fins (2.5-6 floors)
+                    const numFins = Math.floor(Math.random() * 3) + 2; // 2-4 fins
+                    const finSides = ['front', 'back', 'left', 'right'];
+                    const finSide = finSides[Math.floor(Math.random() * finSides.length)];
+                    let finNormal = new THREE.Vector3();
+                    let finTangent = new THREE.Vector3();
+                    let sideAxisLength, mainDimForOffset;
+
+                    switch (finSide) {
+                        case 'front': finNormal.set(0, 0, 1); finTangent.set(1, 0, 0); sideAxisLength = width; mainDimForOffset = depth; break;
+                        case 'back': finNormal.set(0, 0, -1); finTangent.set(-1, 0, 0); sideAxisLength = width; mainDimForOffset = depth; break;
+                        case 'left': finNormal.set(-1, 0, 0); finTangent.set(0, 0, 1); sideAxisLength = depth; mainDimForOffset = width; break;
+                        case 'right': finNormal.set(1, 0, 0); finTangent.set(0, 0, -1); sideAxisLength = depth; mainDimForOffset = width; break;
+                    }
+
+                    const finPosY = featureFloorY - FLOOR_HEIGHT / 2 + finHeight / 2; // Center Y of the fin
+                    const spacing = sideAxisLength / (numFins + 1); // Spacing between fins
+
+                    // Determine fin geometry dimensions based on orientation
+                    let finGeomWidth, finGeomHeight, finGeomDepth;
+                    finGeomHeight = finHeight;
+                    if (finSide === 'front' || finSide === 'back') { // Fins parallel to Z axis
+                        finGeomWidth = finThickness;
+                        finGeomDepth = finDepth;
+                    } else { // Fins parallel to X axis
+                        finGeomWidth = finDepth;
+                        finGeomDepth = finThickness;
+                    }
+                    const finGeom = new THREE.BoxGeometry(finGeomWidth, finGeomHeight, finGeomDepth);
+                    const finScale = new THREE.Vector3(1, 1, 1);
+                    // Use towerCenterY declared outside switch
+
+                    for (let i = 0; i < numFins; i++) {
+                        // Calculate offset along the tangent
+                        const tangentOffset = (i + 1 - (numFins + 1) / 2) * spacing;
+                        // Calculate offset outwards from center
+                        const normalOffset = mainDimForOffset / 2 + finDepth / 2; // From center to outer edge of fin
+
+                        // Combine offsets locally
+                        let localFinPos = finTangent.clone().multiplyScalar(tangentOffset);
+                        localFinPos.addScaledVector(finNormal, normalOffset);
+                        localFinPos.y = finPosY - towerCenterY; // Y relative to tower center Y
+
+                        // Rotate local offset and add to tower center
+                        let rotatedFinOffset = localFinPos.clone().applyEuler(rotation);
+                        let finPosition = new THREE.Vector3(centerX, towerCenterY, centerZ).add(rotatedFinOffset);
+
+                        // Rotation: Align fin depth axis with the normal
+                        let finRotation = rotation.clone();
+                        let alignAxis = (finSide === 'front' || finSide === 'back') ? new THREE.Vector3(0,0,1) : new THREE.Vector3(1,0,0); // Axis that represents depth
+                        let alignQuatFin = new THREE.Quaternion().setFromUnitVectors(alignAxis, finNormal);
+                        finRotation.setFromQuaternion(new THREE.Quaternion().setFromEuler(finRotation).multiply(alignQuatFin));
+
+                        addBuildingMeshPart(finGeom.clone(), material, finPosition, finScale, finRotation);
+                    }
+                    break;
+                 } // End case 'fins' block scope
+
+                case 'stair_core': { // Use block scope
+                     const coreSize = CELL_SIZE * (1.0 + Math.random() * 0.6); // Larger cores
+                     // Core height can extend slightly above/below tower height
+                     const coreHeight = FLOOR_HEIGHT * (towerData.height * (0.7 + Math.random() * 0.5)); // 70-120% tower height
+                     const coreCenterY = coreHeight / 2; // Center Y of the core itself
+                     const coreGeom = new THREE.BoxGeometry(coreSize, coreHeight, coreSize);
+                     const coreScale = new THREE.Vector3(1, 1, 1);
+
+                     // Attach to a random side
+                     const attachSides = [
+                         { normal: new THREE.Vector3(1,0,0), mainDim: width },
+                         { normal: new THREE.Vector3(-1,0,0), mainDim: width },
+                         { normal: new THREE.Vector3(0,0,1), mainDim: depth },
+                         { normal: new THREE.Vector3(0,0,-1), mainDim: depth }
+                     ];
+                     const attachInfo = attachSides[Math.floor(Math.random() * attachSides.length)];
+                     const localAttachNormal = attachInfo.normal;
+                     // Use towerCenterY declared outside switch
+
+                     // Position: From tower center, move to edge, move out by half core size (slight overlap)
+                     let localCoreOffset = localAttachNormal.clone().multiplyScalar(attachInfo.mainDim / 2 + coreSize / 2 * 0.9);
+                     localCoreOffset.y = coreCenterY - towerCenterY; // Y relative to tower center Y
+
+                     let rotatedCoreOffset = localCoreOffset.clone().applyEuler(rotation);
+                     let corePos = new THREE.Vector3(centerX, towerCenterY, centerZ).add(rotatedCoreOffset);
+
+                     addBuildingMeshPart(coreGeom, material, corePos, coreScale, rotation); // Core aligns with tower rotation
+
+                     // Add minimal vertical slits to the core
+                     if (Math.random() < 0.5) {
+                         const numSlits = Math.floor(coreHeight / FLOOR_HEIGHT); // Approx one per floor
+                         const slitHeight = FLOOR_HEIGHT * 0.3;
+                         const slitWidth = coreSize * 0.08; // Narrow
+                         const slitDepth = 0.15; // Thickness of slit geometry
+                         const slitGeom = new THREE.BoxGeometry(slitWidth, slitHeight, slitDepth);
+                         const slitMat = windowMaterialDark;
+                         const slitScale = new THREE.Vector3(1, 1, 1);
+
+                         // Add slits to one of the *other* faces (not the attachment face)
+                         let slitSideNormal;
+                         if (Math.abs(localAttachNormal.x) > 0.5) { // Attached to left/right
+                             slitSideNormal = Math.random() < 0.5 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(0,0,-1); // Use front/back
+                         } else { // Attached to front/back
+                             slitSideNormal = Math.random() < 0.5 ? new THREE.Vector3(1,0,0) : new THREE.Vector3(-1,0,0); // Use left/right
+                         }
+
+                         for (let j=0; j < numSlits; j++) {
+                             const slitY_inCore = (j + 0.5) * FLOOR_HEIGHT; // Y position within core's height
+                              if (slitY_inCore > coreHeight - slitHeight/2) continue; // Avoid slits too high
+
+                             // Position relative to core center
+                             let localSlitPos = slitSideNormal.clone().multiplyScalar(coreSize / 2 + slitDepth / 2); // Outwards from core center
+                             localSlitPos.y = slitY_inCore - coreCenterY; // Y relative to core center
+
+                             // Rotate slit offset by core rotation and add to core position
+                             let rotatedSlitOffset = localSlitPos.clone().applyEuler(rotation);
+                             let slitPos = corePos.clone().add(rotatedSlitOffset);
+
+                             // Rotation: Align slit depth axis (Z) with the slitSideNormal, then apply core rotation
+                             let slitRotation = rotation.clone();
+                             let alignQuatSlit = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), slitSideNormal);
+                             slitRotation.setFromQuaternion(new THREE.Quaternion().setFromEuler(slitRotation).multiply(alignQuatSlit));
+
+                             addBuildingMeshPart(slitGeom.clone(), slitMat, slitPos, slitScale, slitRotation);
+                         }
+                     }
+                     break;
+                 } // End case 'stair_core' block scope
+            } // End switch
+        }
+
+        /**
+         * Adds a bridge connecting two points at a specific height.
+         * @param {number} x1 - X coordinate of the first connection point (tower center).
+         * @param {number} z1 - Z coordinate of the first connection point.
+         * @param {number} x2 - X coordinate of the second connection point.
+         * @param {number} z2 - Z coordinate of the second connection point.
+         * @param {number} y - The Y coordinate (height) of the bridge center.
+         */
+        function addBridge(x1, z1, x2, z2, y) {
+            const midX = (x1 + x2) / 2;
+            const midZ = (z1 + z2) / 2;
+            const dx = x2 - x1;
+            const dz = z2 - z1;
+            const length = Math.sqrt(dx * dx + dz * dz);
+            if (length < CELL_SIZE * 2.0) return; // Don't add very short bridges
+
+            // Calculate angle for rotation
+            const angle = Math.atan2(dx, dz); // Angle relative to positive Z axis
+            const bridgeRotation = new THREE.Euler(0, angle, 0);
+
+            const bridgeWidth = CELL_SIZE * (0.6 + Math.random() * 0.5); // Wider bridges
+            const bridgeHeight = FLOOR_HEIGHT * (0.8 + Math.random() * 0.4); // Thicker bridges
+
+            // Bridge main structure (Box oriented along Z axis initially)
+            const geometry = new THREE.BoxGeometry(bridgeWidth, bridgeHeight, length); // Width, Height, Length
+            const material = concreteMaterials[2]; // Use a consistent concrete
+            const position = new THREE.Vector3(midX, y, midZ);
+            const scale = new THREE.Vector3(1, 1, 1); // Scale is 1
+
+            addBuildingMeshPart(geometry, material, position, scale, bridgeRotation);
+
+            // Optional side detail (like railings or beams)
+            if (Math.random() < 0.6) { // Higher chance of detail
+                const detailHeight = bridgeHeight * 0.4;
+                const detailThickness = 0.15;
+                const detailLength = length * 0.95; // Slightly shorter than bridge
+                const detailMat = concreteMaterials[1]; // Slightly different material
+                // Detail geometry (thin slab along the side)
+                const detailGeom = new THREE.BoxGeometry(detailThickness, detailHeight, detailLength);
+                const detailScale = new THREE.Vector3(1, 1, 1);
+
+                for (let i = -1; i <= 1; i += 2) { // Add detail to both sides (i = -1 and i = 1)
+                    // Offset relative to bridge center, along its local X axis
+                    const localOffsetX = (bridgeWidth / 2 + detailThickness / 2) * i;
+                    let localOffset = new THREE.Vector3(localOffsetX, 0, 0); // Offset along bridge's width axis
+
+                    // Rotate this local offset by the bridge's rotation
+                    let rotatedOffset = localOffset.clone().applyEuler(bridgeRotation);
+                    // Add rotated offset to the bridge's center position
+                    let detailPos = position.clone().add(rotatedOffset);
+
+                    addBuildingMeshPart(detailGeom.clone(), detailMat, detailPos, detailScale, bridgeRotation); // Same rotation as bridge
+                }
+            }
+        }
+
+        // --- Rain Setup (Always On) ---
+        /** Initializes the rain particle system. */
+        function initRain() {
+            rainGeometry = new THREE.BufferGeometry();
+            const positions = []; const velocities = [];
+            const rainAreaSize = GROUND_PLANE_SIZE; // Rain covers the large ground plane area
+            const rainHeight = MAX_HEIGHT * FLOOR_HEIGHT * 2.2; // Start rain high above tallest possible building
+
+            for (let i = 0; i < rainCount; i++) {
+                // Initial random position within the rain area
+                positions.push(
+                    (Math.random() - 0.5) * rainAreaSize, // X
+                    Math.random() * rainHeight,          // Y
+                    (Math.random() - 0.5) * rainAreaSize   // Z
+                );
+                // Initial velocity (falling downwards)
+                velocities.push(0, -(0.9 + Math.random() * 0.6), 0); // X, Y (negative), Z
+            }
+            rainGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            rainGeometry.setAttribute('velocity', new THREE.Float32BufferAttribute(velocities, 3)); // Store velocity per particle
+            rainMaterial = new THREE.PointsMaterial({
+                color: 0xaaaaaa,
+                size: 0.25, // Size of each raindrop point
+                transparent: true,
+                opacity: 0.6,
+                sizeAttenuation: true // Points get smaller further away
+            });
+            rainParticles = new THREE.Points(rainGeometry, rainMaterial);
+            scene.add(rainParticles);
+            console.log("Rain system initialized (Always On).");
+        }
+
+        /** Animates the rain particles falling. */
+        function animateRain() {
+            if (!rainParticles) return; // Guard clause
+
+            const positions = rainParticles.geometry.attributes.position.array;
+            const velocities = rainParticles.geometry.attributes.velocity.array;
+            const rainAreaSize = GROUND_PLANE_SIZE;
+            const rainHeight = MAX_HEIGHT * FLOOR_HEIGHT * 2.2;
+            const groundLevel = -0.5; // Y level where rain disappears/resets
+
+            for (let i = 0; i < rainCount; i++) {
+                const index = i * 3; // Index for X coordinate
+                // Update Y position based on velocity
+                positions[index + 1] += velocities[index + 1];
+
+                // If particle hits the ground, reset its position to the top
+                if (positions[index + 1] < groundLevel) {
+                    positions[index] = (Math.random() - 0.5) * rainAreaSize; // Reset X
+                    positions[index + 1] = rainHeight + Math.random() * 10;   // Reset Y to top + random offset
+                    positions[index + 2] = (Math.random() - 0.5) * rainAreaSize; // Reset Z
+                }
+            }
+            // Important: Notify Three.js that the particle positions have changed
+            rainParticles.geometry.attributes.position.needsUpdate = true;
+        }
+
+         // --- Grass Setup ---
+         /** Initializes the grass particle system. */
+         function initGrass() {
+            console.log("--- initGrass START ---");
+            grassGeometry = new THREE.BufferGeometry();
+            const positions = [];
+            grassOriginalPositions = []; // Store original positions for animation
+            const grassAreaSize = BASE_PLATFORM_AREA_SIZE; // Area to cover
+
+            for (let i = 0; i < GRASS_COUNT; i++) {
+                // Position points randomly on the XZ plane within the base area
+                const x = (Math.random() - 0.5) * grassAreaSize;
+                // ADDING RANDOM HEIGHT VARIATION
+                const y = Math.random() * GRASS_MAX_HEIGHT; // Random height between 0 and GRASS_MAX_HEIGHT
+                const z = (Math.random() - 0.5) * grassAreaSize;
+                positions.push(x, y, z);
+                grassOriginalPositions.push(x, y, z); // Store original position including random height
+            }
+            grassGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+
+            grassMaterial = new THREE.PointsMaterial({
+                color: GRASS_DOT_COLOR,
+                size: GRASS_DOT_SIZE,
+                sizeAttenuation: true, // Points get smaller further away
+                transparent: true,
+                opacity: 0.8 // Slightly transparent
+            });
+
+            grassParticles = new THREE.Points(grassGeometry, grassMaterial);
+            grassParticles.name = "GrassParticles"; // Name for potential cleanup
+            scene.add(grassParticles);
+            console.log(`Grass system initialized with ${GRASS_COUNT} particles.`);
+             console.log("--- initGrass END ---");
+        }
+
+        /** Animates the grass particles to simulate wind. */
+        function animateGrass() {
+            if (!grassParticles || !grassOriginalPositions) return; // Guard clause
+
+            const positions = grassParticles.geometry.attributes.position.array;
+            const time = Date.now() * 0.0005; // Time factor for wind speed
+
+            for (let i = 0; i < GRASS_COUNT; i++) {
+                const index = i * 3;
+                const originalX = grassOriginalPositions[index];
+                const originalY = grassOriginalPositions[index + 1]; // Use original Y height
+                const originalZ = grassOriginalPositions[index + 2];
+
+                // Simple sine wave based on original position and time for wind effect
+                const windX = Math.sin(time + originalX * WIND_FREQUENCY + originalZ * WIND_FREQUENCY * 0.5) * WIND_STRENGTH;
+                // Optional: Add a different Z wind component
+                // const windZ = Math.cos(time + originalZ * WIND_FREQUENCY * 0.8) * WIND_STRENGTH * 0.5;
+
+                // Update current position based on original position + wind offset
+                positions[index] = originalX + windX;
+                positions[index + 1] = originalY; // Keep Y based on its original random height
+                // positions[index + 2] = originalZ + windZ; // If adding Z wind
+            }
+
+            // Important: Notify Three.js that the particle positions have changed
+            grassParticles.geometry.attributes.position.needsUpdate = true;
+        }
+
+
+        // --- Main Animation Loop ---
+        /** The main render loop, handling camera updates, building growth, and rain. */
+        function animate() {
+            requestAnimationFrame(animate); // Loop the animation
+            const delta = Date.now() * 0.0003; // Time factor for orbit animation
+
+            // --- Camera Orbit (Isometric View Only) ---
+            if (isOrbitView && activeCamera === orthographicCamera) {
+                const radius = 100; // Orbit radius for isometric view
+                orthographicCamera.position.x = Math.cos(delta) * radius;
+                orthographicCamera.position.z = Math.sin(delta) * radius;
+                // Keep Y position consistent for a stable isometric feel, adjust height based on radius
+                orthographicCamera.position.y = radius * 0.7;
+                // Look towards the lower-middle section of the potential building mass
+                orthographicCamera.lookAt(0, MAX_HEIGHT * FLOOR_HEIGHT / 6, 0);
+                orthographicCamera.updateProjectionMatrix(); // Needed for ortho camera position/rotation changes
+            }
+
+            // --- Building Growth Animation ---
+            if (isAnimating && currentPartIndex < buildingParts.length) {
+                // Reveal parts gradually based on animationSpeed
+                const part = buildingParts[currentPartIndex];
+                // Ensure part and mesh exist before trying to animate
+                if (part && part.mesh && Math.random() < animationSpeed) {
+                        const mesh = part.mesh;
+                        mesh.visible = true; // Make the part visible
+                        const targetScale = part.scale.clone();
+                        const targetPosition = part.position.clone(); // Target is stored
+
+                        // Set initial state for animation (small scale at target position)
+                        // Check if scale is already near zero to avoid re-animating fully grown parts on resume
+                        if (mesh.scale.lengthSq() < 0.01) { // If scale is very small
+                           mesh.scale.set(targetScale.x * 0.01, targetScale.y * 0.01, targetScale.z * 0.01);
+                        }
+                        mesh.position.copy(targetPosition); // Start at final position
+                        if (part.rotation) mesh.rotation.copy(part.rotation); // Set final rotation immediately
+
+                        // Function to handle the smooth scaling animation
+                        const animateGrowth = (currentMesh, finalScale) => {
+                            const growthSpeed = 0.12; // How fast it scales up (adjust for speed)
+                            currentMesh.scale.lerp(finalScale, growthSpeed); // Interpolate scale
+
+                            // Check if scale is close enough to target
+                            if (currentMesh.scale.distanceTo(finalScale) < 0.005 * finalScale.length()) { // Relative threshold
+                                currentMesh.scale.copy(finalScale); // Snap to final scale
+                                return true; // Finished growing
+                            }
+                            return false; // Still growing
+                        };
+
+                        // Check if this part is already fully scaled (e.g., after pause/resume)
+                        if (mesh.scale.distanceTo(targetScale) > 0.005 * targetScale.length()) {
+                            // Use setInterval for smooth growth independent of reveal speed
+                            const intervalId = setInterval(() => {
+                                if (!isAnimating) { // Stop growth if animation is paused
+                                    clearInterval(intervalId);
+                                    const index = growthIntervals.indexOf(intervalId);
+                                    if (index > -1) growthIntervals.splice(index, 1);
+                                    return;
+                                }
+                                if (animateGrowth(mesh, targetScale)) {
+                                    clearInterval(intervalId); // Stop interval when growth is complete
+                                    const index = growthIntervals.indexOf(intervalId);
+                                    if (index > -1) growthIntervals.splice(index, 1); // Remove from tracking array
+                                }
+                            }, 16); // Run roughly 60 times per second
+                            growthIntervals.push(intervalId); // Track the interval
+                        } else {
+                             mesh.scale.copy(targetScale); // Ensure it's exactly at target scale if already close
+                        }
+
+
+                        currentPartIndex++; // Move to the next part to reveal
+                } else if (!part || !part.mesh) {
+                     currentPartIndex++; // Skip invalid part
+                }
+            }
+
+            animateRain(); // Update rain particle positions
+            animateGrass(); // Update grass particle positions
+
+            renderer.render(scene, activeCamera); // Render the scene with the currently active camera
+        }
+
+        /** Handles window resize events to update camera aspect ratios and renderer size. */
+        function onWindowResize() {
+            const aspect = window.innerWidth / window.innerHeight;
+
+            // Update Perspective Camera (used for Top View)
+            perspectiveCamera.aspect = aspect;
+            perspectiveCamera.updateProjectionMatrix();
+
+            // Update Orthographic Camera (used for Isometric View)
+            // Adjust frustum based on aspect ratio to avoid stretching
+            const frustumSize = 120; // Controls the zoom level of the ortho view
+            orthographicCamera.left = -frustumSize * aspect / 2;
+            orthographicCamera.right = frustumSize * aspect / 2;
+            orthographicCamera.top = frustumSize / 2;
+            orthographicCamera.bottom = -frustumSize / 2;
+            orthographicCamera.updateProjectionMatrix();
+
+            // Update renderer size
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        /** Resets the building by clearing the old one and generating a new one. */
+        function resetBuilding() {
+            console.log("--- resetBuilding START ---");
+            isAnimating = false; // Pause animation during reset
+            growthIntervals.forEach(clearInterval); // Stop all growth animations
+            growthIntervals = [];
+
+            // Remove old grass system
+            if (grassParticles) {
+                scene.remove(grassParticles);
+                if (grassParticles.geometry) grassParticles.geometry.dispose();
+                if (grassParticles.material) grassParticles.material.dispose();
+                grassParticles = null;
+                grassOriginalPositions = null;
+                console.log("Old grass system removed.");
+            }
+
+            // Generate new building data (populates towerPositions, clears buildingParts)
+            generateBuilding();
+
+            // Initialize new grass system
+            initGrass();
+
+            isAnimating = true; // Resume animation
+            document.getElementById('pauseBtn').textContent = 'Pause'; // Reset button text
+            console.log("--- resetBuilding END ---");
+        }
+
+        /** Toggles the building growth animation on and off. */
+        function toggleAnimation() {
+            isAnimating = !isAnimating;
+            document.getElementById('pauseBtn').textContent = isAnimating ? 'Pause' : 'Resume';
+            if (!isAnimating) {
+                // If pausing, clear intervals but keep meshes visible
+                growthIntervals.forEach(clearInterval);
+                growthIntervals = [];
+                 console.log("Animation Paused");
+            } else {
+                // If resuming, restart growth for parts that haven't finished
+                 console.log("Animation Resumed");
+                 // Restart growth for existing, partially grown parts
+                 buildingParts.slice(currentPartIndex).forEach(part => { // Check parts from current index onwards
+                    if (part && part.mesh && part.mesh.visible) { // No need to check name now
+                        const mesh = part.mesh;
+                        const targetScale = part.scale;
+                        // Only restart if it's not fully scaled
+                        if (mesh.scale.distanceTo(targetScale) > 0.005 * targetScale.length()) {
+                            let intervalExists = false; // Simplified check
+
+                            if (!intervalExists) {
+                                const animateGrowth = (currentMesh, finalScale) => {
+                                    const growthSpeed = 0.12;
+                                    currentMesh.scale.lerp(finalScale, growthSpeed);
+                                    if (currentMesh.scale.distanceTo(finalScale) < 0.005 * finalScale.length()) {
+                                        currentMesh.scale.copy(finalScale);
+                                        return true;
+                                    }
+                                    return false;
+                                };
+
+                                const intervalId = setInterval(() => {
+                                    if (!isAnimating) {
+                                        clearInterval(intervalId);
+                                        const index = growthIntervals.indexOf(intervalId);
+                                        if (index > -1) growthIntervals.splice(index, 1);
+                                        return;
+                                    }
+                                    if (animateGrowth(mesh, targetScale)) {
+                                        clearInterval(intervalId);
+                                        const index = growthIntervals.indexOf(intervalId);
+                                        if (index > -1) growthIntervals.splice(index, 1);
+                                    }
+                                }, 16);
+                                growthIntervals.push(intervalId);
+                            }
+                        }
+                    }
+                 });
+            }
+        }
+
+        /**
+         * Sets the active camera and view mode (Isometric Orbit or Perspective Top-Down).
+         * @param {'orbit' | 'top'} type - The desired view type.
+         */
+        function setCamera(type) {
+            if (type === 'orbit') { // Isometric Orbit View
+                isOrbitView = true;
+                activeCamera = orthographicCamera;
+                // Initial position/lookAt is handled within the animate loop for orbit
+                orthographicCamera.zoom = 1; // Ensure zoom is reset
+                orthographicCamera.updateProjectionMatrix(); // Update matrix after potential zoom change
+                console.log("Switched to Isometric Orbit View (Orthographic Camera)");
+
+            } else if (type === 'top') { // Perspective Top View
+                isOrbitView = false;
+                activeCamera = perspectiveCamera;
+                // Set a fixed top-down position - INCREASED Y VALUE FOR ZOOM OUT
+                perspectiveCamera.position.set(0, MAX_HEIGHT * FLOOR_HEIGHT * 2.8, CELL_SIZE * 8); // Increased Y multiplier, slightly increased Z
+                perspectiveCamera.lookAt(0, 0, 0); // Look at the center of the scene origin
+                perspectiveCamera.updateProjectionMatrix();
+                console.log("Switched to Top View (Perspective Camera)");
+            }
+        }
+
+        // --- generateRoadTexture function removed ---
+
+        /** Initializes the entire Three.js scene, cameras, lights, controls, and starts the animation. */
+        function init() {
+            try {
+                console.log("--- init START ---");
+                scene = new THREE.Scene();
+                scene.background = new THREE.Color(fogColor);
+                scene.fog = new THREE.Fog(fogColor, fogNear, fogFar);
+
+                // --- Setup Cameras ---
+                const aspect = window.innerWidth / window.innerHeight;
+                perspectiveCamera = new THREE.PerspectiveCamera(50, aspect, 0.1, 1000 );
+                const frustumSize = 120;
+                orthographicCamera = new THREE.OrthographicCamera( -frustumSize * aspect / 2, frustumSize * aspect / 2, frustumSize / 2, -frustumSize / 2, 1, 1000 );
+                orthographicCamera.position.set(60, 50, 60);
+                orthographicCamera.zoom = 1;
+
+
+                // --- Renderer ---
+                renderer = new THREE.WebGLRenderer({ antialias: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.shadowMap.enabled = true;
+                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                document.body.appendChild(renderer.domElement);
+
+                // --- Lighting (Slightly Increased Intensity) ---
+                const ambientLight = new THREE.AmbientLight(0x708090, 1.2); // Increased intensity
+                scene.add(ambientLight);
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 1.1);
+                directionalLight.position.set(50, 80, 60);
+                directionalLight.castShadow = true;
+                directionalLight.shadow.mapSize.width = 2048;
+                directionalLight.shadow.mapSize.height = 2048;
+                directionalLight.shadow.camera.near = 10;
+                directionalLight.shadow.camera.far = 250;
+                directionalLight.shadow.camera.left = -120;
+                directionalLight.shadow.camera.right = 120;
+                directionalLight.shadow.camera.top = 120;
+                directionalLight.shadow.camera.bottom = -120;
+                directionalLight.shadow.bias = -0.002;
+                scene.add(directionalLight);
+                const hemisphereLight = new THREE.HemisphereLight(0x8090a0, 0x405060, 0.9); // Increased intensity
+                scene.add(hemisphereLight);
+
+                // --- Large Ground Plane (Underneath) ---
+                const groundGeometry = new THREE.PlaneGeometry(GROUND_PLANE_SIZE, GROUND_PLANE_SIZE);
+                const groundMaterial = new THREE.MeshStandardMaterial({
+                    color: UNDERGROUND_COLOR, // Simple dark color
+                    roughness: 0.95
+                });
+                const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+                ground.name = "LargeGroundPlane"; // Different name
+                ground.rotation.x = -Math.PI / 2; // Rotate to be horizontal
+                ground.position.y = -0.25; // Position slightly lower
+                ground.receiveShadow = true; // Allow ground to receive shadows
+                scene.add(ground);
+
+
+                // --- Generate Building Data FIRST ---
+                generateBuilding();
+
+                // --- Initialize Grass System ---
+                initGrass();
+
+                // --- Initialize Rain System ---
+                initRain();
+
+                // --- Set Initial Camera ---
+                 setCamera('orbit'); // Start with the isometric orbit view
+
+                // --- Setup UI Controls ---
+                window.addEventListener('resize', onWindowResize);
+                document.getElementById('resetBtn').addEventListener('click', resetBuilding);
+                document.getElementById('pauseBtn').addEventListener('click', toggleAnimation);
+                document.getElementById('orbitBtn').addEventListener('click', () => setCamera('orbit'));
+                document.getElementById('topBtn').addEventListener('click', () => setCamera('top'));
+
+                // Hide loading message and show controls
+                document.getElementById('loading').style.display = 'none';
+                document.querySelector('.controls').style.display = 'flex';
+
+                // --- Start Animation ---
+                animate();
+
+                console.log("--- init END ---");
+
+            } catch (error) {
+                console.error("Error initializing scene:", error);
+                // Display error message to the user
+                 const loadingDiv = document.getElementById('loading');
+                 if(loadingDiv) {
+                     loadingDiv.innerHTML = `Initialization Error: ${error.message}.<br>Check console (F12) for details.`;
+                     loadingDiv.style.color = '#ffdddd';
+                     loadingDiv.style.background = 'rgba(150, 0, 0, 0.8)';
+                     loadingDiv.style.display = 'block'; // Ensure it's visible
+                 }
+                 // Hide controls if init failed
+                 const controlsDiv = document.querySelector('.controls');
+                 if (controlsDiv) controlsDiv.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
+
